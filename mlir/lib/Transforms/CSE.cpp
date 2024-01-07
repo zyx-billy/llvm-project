@@ -166,11 +166,11 @@ void CSEDriver::replaceUsesAndDelete(ScopedMapTy &knownValues, Operation *op,
       opsToErase.push_back(op);
   }
 
-  // If the existing operation has an unknown location and the current
-  // operation doesn't, then set the existing op's location to that of the
-  // current op.
-  if (isa<UnknownLoc>(existing->getLoc()) && !isa<UnknownLoc>(op->getLoc()))
-    existing->setLoc(op->getLoc());
+  // If the existing operation and the current operation don't agree on the
+  // location, erase the location of the exisitng op as it is now effectively a
+  // deduplicated version of both previous ops.
+  if (existing->getLoc() != op->getLoc())
+    existing->setLoc(UnknownLoc::get(existing->getContext()));
 
   ++numCSE;
 }

@@ -2010,8 +2010,6 @@ module attributes {transform.with_named_sequence} {
 //       CHECK:   }
 //       CHECK:   return %[[const]], %[[ex1]], %[[ex2]]
 func.func @test_apply_cse() -> (index, index, index) {
-  // expected-remark @below{{eliminated 1}}
-  // expected-remark @below{{eliminated 2}}
   %0 = arith.constant 0 : index
   %1 = scf.execute_region -> index {
     %2 = arith.constant 0 : index
@@ -2057,11 +2055,9 @@ module attributes {transform.with_named_sequence} {
     transform.test_print_param %p4 : !transform.param<i64>
 
     // The other handles were also updated.
-    transform.test_print_remark_at_operand %elim_first, "eliminated 1" : !transform.any_op
     %p5 = transform.num_associations %elim_first : (!transform.any_op) -> !transform.param<i64>
     // expected-remark @below{{1}}
     transform.test_print_param %p5 : !transform.param<i64>
-    transform.test_print_remark_at_operand %elim_second, "eliminated 2" : !transform.any_op
     %p6 = transform.num_associations %elim_second : (!transform.any_op) -> !transform.param<i64>
     // expected-remark @below{{1}}
     transform.test_print_param %p6 : !transform.param<i64>
