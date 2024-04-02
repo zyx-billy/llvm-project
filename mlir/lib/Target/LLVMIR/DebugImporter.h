@@ -182,6 +182,8 @@ private:
   };
   RecursionPruner recursionPruner;
 
+  detail::DIRecursiveTypeVerifier recursiveTypeVerifier;
+
   MLIRContext *context;
   ModuleOp mlirModule;
 };

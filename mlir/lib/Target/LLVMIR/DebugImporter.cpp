@@ -28,6 +28,7 @@ using namespace mlir::LLVM::detail;
 
 DebugImporter::DebugImporter(ModuleOp mlirModule)
     : recursionPruner(mlirModule.getContext()),
+      recursiveTypeVerifier(mlirModule->getLoc()),
       context(mlirModule.getContext()), mlirModule(mlirModule) {}
 
 Location DebugImporter::translateFuncLocation(llvm::Function *func) {
@@ -297,8 +298,11 @@ DINodeAttr DebugImporter::translate(llvm::DINode *node) {
     auto [result, isSelfContained] =
         recursionPruner.finalizeTranslation(node, attr);
     // Only cache fully self-contained nodes.
-    if (isSelfContained)
+    if (isSelfContained) {
+      assert(succeeded(recursiveTypeVerifier.verify(result)) &&
+             "produced invalid recursive DI type.");
       nodeToAttr.try_emplace(node, result);
+    }
     return result;
   }
   return nullptr;

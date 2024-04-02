@@ -27,6 +27,35 @@ LogicalResult verifyAccessGroupOpInterface(Operation *op);
 /// the alias analysis interface.
 LogicalResult verifyAliasAnalysisOpInterface(Operation *op);
 
+/// Caching verifier for DINodeAttrs that may contain recursive DI types.
+class DIRecursiveTypeVerifier {
+public:
+  DIRecursiveTypeVerifier(Location errorLoc) : errorLoc(errorLoc) {}
+
+  /// Verifies that DIRecursiveTypeAttr usages inside other attributes are
+  /// legal.
+  /// 1. There must be no unbound recursive self-references.
+  /// 2. There must not be any ambiguous recursive IDs.
+  /// This is an expensive check that walks the entire attribute tree.
+  LogicalResult verify(DINodeAttr attr);
+
+private:
+  /// Recursive verification helper.
+  /// `context` contains the set of recIds that are currently in scope when
+  /// evaluating `attr`.
+  /// `unboundSelfRefs` contains the set of recIds that are contained in `attr`
+  /// upon return.
+  LogicalResult
+  verifyDIRecursiveTypesWithContext(Attribute attr,
+                                    DenseSet<DistinctAttr> &context,
+                                    DenseSet<DistinctAttr> &unboundSelfRefs);
+
+  DenseSet<Attribute> knownLegals;
+
+  /// The location to use for reporting errors.
+  Location errorLoc;
+};
+
 } // namespace detail
 } // namespace LLVM
 } // namespace mlir

@@ -101,4 +101,57 @@ SmallVector<Value> mlir::LLVM::CallOp::getAccessedOperands() {
       }));
 }
 
+//===----------------------------------------------------------------------===//
+// DIRecursiveTypeAttrInterface
+//===----------------------------------------------------------------------===//
+LogicalResult
+mlir::LLVM::detail::DIRecursiveTypeVerifier::verify(DINodeAttr attr) {
+  DenseSet<DistinctAttr> context;
+  DenseSet<DistinctAttr> unboundSelfRefs;
+  return verifyDIRecursiveTypesWithContext(attr, context, unboundSelfRefs);
+}
+
+LogicalResult
+mlir::LLVM::detail::DIRecursiveTypeVerifier::verifyDIRecursiveTypesWithContext(
+    Attribute attr, DenseSet<DistinctAttr> &context,
+    DenseSet<DistinctAttr> &unboundSelfRefs) {
+  if (knownLegals.contains(attr))
+    return success();
+
+  DistinctAttr recId;
+  if (auto recType = dyn_cast<DIRecursiveTypeAttrInterface>(attr)) {
+    if ((recId = recType.getRecId())) {
+      if (recType.isRecSelf()) {
+        unboundSelfRefs.insert(recId);
+        if (context.contains(recId))
+          return success();
+        return emitError(errorLoc)
+               << "Unbound recursive self-reference to " << recId;
+      }
+
+      auto [_, inserted] = context.insert(recId);
+      if (!inserted)
+        return emitError(errorLoc) << "Duplicate recursive ID: " << recId;
+    }
+  }
+
+  bool recursivelySucceeded = true;
+  attr.walkImmediateSubElements(
+      [&](Attribute innerAttr) {
+        recursivelySucceeded &= succeeded(verifyDIRecursiveTypesWithContext(
+            innerAttr, context, unboundSelfRefs));
+      },
+      [&](Type innerType) {});
+
+  if (recId) {
+    context.erase(recId);
+    unboundSelfRefs.erase(recId);
+  }
+
+  if (recursivelySucceeded && unboundSelfRefs.empty())
+    knownLegals.insert(attr);
+
+  return success(recursivelySucceeded);
+}
+
 #include "mlir/Dialect/LLVMIR/LLVMInterfaces.cpp.inc"
