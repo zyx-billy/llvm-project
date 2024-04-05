@@ -154,4 +154,53 @@ mlir::LLVM::detail::DIRecursiveTypeVerifier::verifyDIRecursiveTypesWithContext(
   return success(recursivelySucceeded);
 }
 
+Attribute pruneDIRecursiveTypesWithContext(Attribute attr,
+                                           DenseSet<DistinctAttr> &context) {
+  DistinctAttr recId;
+  if (auto recType = dyn_cast<DIRecursiveTypeAttrInterface>(attr)) {
+    if ((recId = recType.getRecId())) {
+      if (recType.isRecSelf())
+        return attr;
+
+      auto [_, inserted] = context.insert(recId);
+      if (!inserted) {
+        // A nested rec-decl. Prune into a rec-self.
+        return recType.getRecSelf(recId);
+      }
+    }
+  }
+
+  // Collect sub attrs.
+  SmallVector<Attribute> attrs;
+  SmallVector<Type> types;
+  attr.walkImmediateSubElements(
+      [&attrs](Attribute attr) { attrs.push_back(attr); },
+      [&types](Type type) { types.push_back(type); });
+
+  // Recurse into attributes.
+  bool changed = false;
+  for (Attribute &innerAttr : attrs) {
+    Attribute replaced = pruneDIRecursiveTypesWithContext(innerAttr, context);
+    if (replaced != innerAttr) {
+      innerAttr = replaced;
+      changed = true;
+    }
+  }
+
+  Attribute result = attr;
+  if (changed)
+    result = result.replaceImmediateSubElements(attrs, types);
+
+  // Reset context.
+  if (recId)
+    context.erase(recId);
+
+  return result;
+}
+
+DINodeAttr mlir::LLVM::detail::pruneDIRecursiveTypes(DINodeAttr attr) {
+  DenseSet<DistinctAttr> context;
+  return cast<DINodeAttr>(pruneDIRecursiveTypesWithContext(attr, context));
+}
+
 #include "mlir/Dialect/LLVMIR/LLVMInterfaces.cpp.inc"

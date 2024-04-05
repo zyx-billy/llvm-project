@@ -56,6 +56,9 @@ private:
   Location errorLoc;
 };
 
+/// Prune nested recursive declarations.
+DINodeAttr pruneDIRecursiveTypes(DINodeAttr attr);
+
 } // namespace detail
 } // namespace LLVM
 } // namespace mlir
