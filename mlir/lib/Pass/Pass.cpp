@@ -471,6 +471,7 @@ llvm::hash_code OpPassManager::hash() {
 
 LogicalResult OpToOpPassAdaptor::run(Pass *pass, Operation *op,
                                      AnalysisManager am, bool verifyPasses,
+                                     bool eagerTermination,
                                      unsigned parentInitGeneration) {
   std::optional<RegisteredOperationName> opInfo = op->getRegisteredInfo();
   if (!opInfo)
@@ -506,9 +507,9 @@ LogicalResult OpToOpPassAdaptor::run(Pass *pass, Operation *op,
     if (failed(pipeline.initialize(root->getContext(), parentInitGeneration)))
       return failure();
     AnalysisManager nestedAm = root == op ? am : am.nest(root);
-    return OpToOpPassAdaptor::runPipeline(pipeline, root, nestedAm,
-                                          verifyPasses, parentInitGeneration,
-                                          pi, &parentInfo);
+    return OpToOpPassAdaptor::runPipeline(
+        pipeline, root, nestedAm, verifyPasses, eagerTermination,
+        parentInitGeneration, pi, &parentInfo);
   };
   pass->passState.emplace(op, am, dynamicPipelineCallback);
 
@@ -521,7 +522,7 @@ LogicalResult OpToOpPassAdaptor::run(Pass *pass, Operation *op,
       [&]() {
         // Invoke the virtual runOnOperation method.
         if (auto *adaptor = dyn_cast<OpToOpPassAdaptor>(pass))
-          adaptor->runOnOperation(verifyPasses);
+          adaptor->runOnOperation(verifyPasses, eagerTermination);
         else
           pass->runOnOperation();
         passFailed = pass->passState->irAndPassFailed.getInt();
@@ -570,7 +571,8 @@ LogicalResult OpToOpPassAdaptor::run(Pass *pass, Operation *op,
 /// Run the given operation and analysis manager on a provided op pass manager.
 LogicalResult OpToOpPassAdaptor::runPipeline(
     OpPassManager &pm, Operation *op, AnalysisManager am, bool verifyPasses,
-    unsigned parentInitGeneration, PassInstrumentor *instrumentor,
+    bool eagerTermination, unsigned parentInitGeneration,
+    PassInstrumentor *instrumentor,
     const PassInstrumentation::PipelineParentInfo *parentInfo) {
   assert((!instrumentor || parentInfo) &&
          "expected parent info if instrumentor is provided");
@@ -589,7 +591,8 @@ LogicalResult OpToOpPassAdaptor::runPipeline(
   }
 
   for (Pass &pass : pm.getPasses())
-    if (failed(run(&pass, op, am, verifyPasses, parentInitGeneration)))
+    if (failed(run(&pass, op, am, verifyPasses, eagerTermination,
+                   parentInitGeneration)))
       return failure();
 
   if (instrumentor) {
@@ -708,15 +711,17 @@ void OpToOpPassAdaptor::runOnOperation() {
 }
 
 /// Run the held pipeline over all nested operations.
-void OpToOpPassAdaptor::runOnOperation(bool verifyPasses) {
+void OpToOpPassAdaptor::runOnOperation(bool verifyPasses,
+                                       bool eagerTermination) {
   if (getContext().isMultithreadingEnabled())
-    runOnOperationAsyncImpl(verifyPasses);
+    runOnOperationAsyncImpl(verifyPasses, eagerTermination);
   else
-    runOnOperationImpl(verifyPasses);
+    runOnOperationImpl(verifyPasses, eagerTermination);
 }
 
 /// Run this pass adaptor synchronously.
-void OpToOpPassAdaptor::runOnOperationImpl(bool verifyPasses) {
+void OpToOpPassAdaptor::runOnOperationImpl(bool verifyPasses,
+                                           bool eagerTermination) {
   auto am = getAnalysisManager();
   PassInstrumentation::PipelineParentInfo parentInfo = {llvm::get_threadid(),
                                                         this};
@@ -731,8 +736,12 @@ void OpToOpPassAdaptor::runOnOperationImpl(bool verifyPasses) {
         // Run the held pipeline over the current operation.
         unsigned initGeneration = mgr->impl->initializationGeneration;
         if (failed(runPipeline(*mgr, &op, am.nest(&op), verifyPasses,
-                               initGeneration, instrumentor, &parentInfo)))
-          return signalPassFailure();
+                               eagerTermination, initGeneration, instrumentor,
+                               &parentInfo))) {
+          signalPassFailure();
+          if (eagerTermination)
+            return;
+        }
       }
     }
   }
@@ -748,7 +757,8 @@ static bool hasSizeMismatch(ArrayRef<OpPassManager> lhs,
 }
 
 /// Run this pass adaptor synchronously.
-void OpToOpPassAdaptor::runOnOperationAsyncImpl(bool verifyPasses) {
+void OpToOpPassAdaptor::runOnOperationAsyncImpl(bool verifyPasses,
+                                                bool eagerTermination) {
   AnalysisManager am = getAnalysisManager();
   MLIRContext *context = &getContext();
 
@@ -799,6 +809,7 @@ void OpToOpPassAdaptor::runOnOperationAsyncImpl(bool verifyPasses) {
   // An atomic failure variable for the async executors.
   std::vector<std::atomic<bool>> activePMs(asyncExecutors.size());
   std::fill(activePMs.begin(), activePMs.end(), false);
+  bool pipelineFailed = false;
   auto processFn = [&](OpPMInfo &opInfo) {
     // Find an executor for this operation.
     auto it = llvm::find_if(activePMs, [](std::atomic<bool> &isActive) {
@@ -810,17 +821,24 @@ void OpToOpPassAdaptor::runOnOperationAsyncImpl(bool verifyPasses) {
     // Get the pass manager for this operation and execute it.
     OpPassManager &pm = asyncExecutors[pmIndex][opInfo.passManagerIdx];
     LogicalResult pipelineResult = runPipeline(
-        pm, opInfo.op, opInfo.am, verifyPasses,
+        pm, opInfo.op, opInfo.am, verifyPasses, eagerTermination,
         pm.impl->initializationGeneration, instrumentor, &parentInfo);
 
     // Reset the active bit for this pass manager.
     activePMs[pmIndex].store(false);
+    pipelineFailed |= failed(pipelineResult);
     return pipelineResult;
   };
 
   // Signal a failure if any of the executors failed.
-  if (failed(failableParallelForEach(context, opInfos, processFn)))
-    signalPassFailure();
+  if (eagerTermination) {
+    if (failed(failableParallelForEach(context, opInfos, processFn)))
+      signalPassFailure();
+  } else {
+    parallelForEach(context, opInfos, processFn);
+    if (pipelineFailed)
+      signalPassFailure();
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -830,16 +848,20 @@ void OpToOpPassAdaptor::runOnOperationAsyncImpl(bool verifyPasses) {
 PassManager::PassManager(MLIRContext *ctx, StringRef operationName,
                          Nesting nesting)
     : OpPassManager(operationName, nesting), context(ctx), passTiming(false),
-      verifyPasses(true) {}
+      verifyPasses(true), eagerTermination(false) {}
 
 PassManager::PassManager(OperationName operationName, Nesting nesting)
     : OpPassManager(operationName, nesting),
       context(operationName.getContext()), passTiming(false),
-      verifyPasses(true) {}
+      verifyPasses(true), eagerTermination(false) {}
 
 PassManager::~PassManager() = default;
 
 void PassManager::enableVerifier(bool enabled) { verifyPasses = enabled; }
+
+void PassManager::enableEagerTermination(bool eager) {
+  eagerTermination = eager;
+}
 
 /// Run the passes within this manager on the provided operation.
 LogicalResult PassManager::run(Operation *op) {
@@ -901,6 +923,7 @@ void PassManager::addInstrumentation(std::unique_ptr<PassInstrumentation> pi) {
 
 LogicalResult PassManager::runPasses(Operation *op, AnalysisManager am) {
   return OpToOpPassAdaptor::runPipeline(*this, op, am, verifyPasses,
+                                        eagerTermination,
                                         impl->initializationGeneration);
 }
 

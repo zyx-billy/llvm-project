@@ -29,7 +29,7 @@ public:
   OpToOpPassAdaptor(const OpToOpPassAdaptor &rhs) = default;
 
   /// Run the held pipeline over all operations.
-  void runOnOperation(bool verifyPasses);
+  void runOnOperation(bool verifyPasses, bool eagerTermination);
   void runOnOperation() override;
 
   /// Try to merge the current pass adaptor into 'rhs'. This will try to append
@@ -60,17 +60,18 @@ public:
 
 private:
   /// Run this pass adaptor synchronously.
-  void runOnOperationImpl(bool verifyPasses);
+  void runOnOperationImpl(bool verifyPasses, bool eagerTermination);
 
   /// Run this pass adaptor asynchronously.
-  void runOnOperationAsyncImpl(bool verifyPasses);
+  void runOnOperationAsyncImpl(bool verifyPasses, bool eagerTermination);
 
   /// Run the given operation and analysis manager on a single pass.
   /// `parentInitGeneration` is the initialization generation of the parent pass
   /// manager, and is used to initialize any dynamic pass pipelines run by the
   /// given pass.
   static LogicalResult run(Pass *pass, Operation *op, AnalysisManager am,
-                           bool verifyPasses, unsigned parentInitGeneration);
+                           bool verifyPasses, bool eagerTermination,
+                           unsigned parentInitGeneration);
 
   /// Run the given operation and analysis manager on a provided op pass
   /// manager. `parentInitGeneration` is the initialization generation of the
@@ -78,7 +79,8 @@ private:
   /// run by the given passes.
   static LogicalResult runPipeline(
       OpPassManager &pm, Operation *op, AnalysisManager am, bool verifyPasses,
-      unsigned parentInitGeneration, PassInstrumentor *instrumentor = nullptr,
+      bool eagerTermination, unsigned parentInitGeneration,
+      PassInstrumentor *instrumentor = nullptr,
       const PassInstrumentation::PipelineParentInfo *parentInfo = nullptr);
 
   /// A set of adaptors to run.

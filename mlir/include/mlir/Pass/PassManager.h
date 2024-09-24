@@ -274,6 +274,9 @@ public:
   /// Runs the verifier after each individual pass.
   void enableVerifier(bool enabled = true);
 
+  /// Terminate pass scheduling on remaining ops if one fails.
+  void enableEagerTermination(bool eager = true);
+
   //===--------------------------------------------------------------------===//
   // Instrumentations
   //===--------------------------------------------------------------------===//
@@ -496,6 +499,10 @@ private:
 
   /// A flag that indicates if the IR should be verified in between passes.
   bool verifyPasses : 1;
+
+  /// A flag that indicates if pass scheduling should terminate on the first
+  /// op that fails a pass. False means all ops are run before terminating.
+  bool eagerTermination : 1;
 };
 
 /// Register a set of useful command-line options that can be used to configure

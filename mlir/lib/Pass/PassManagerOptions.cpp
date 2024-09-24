@@ -83,6 +83,14 @@ struct PassManagerOptions {
               "display the results in a merged list sorted by pass name"),
           clEnumValN(PassDisplayMode::Pipeline, "pipeline",
                      "display the results with a nested pipeline view"))};
+
+  //===--------------------------------------------------------------------===//
+  // Pass Scheduling
+  //===--------------------------------------------------------------------===//
+  llvm::cl::opt<bool> eagerTermination{
+      "mlir-pass-eager-termination",
+      llvm::cl::desc(
+          "Terminate pass scheduling for remaining ops on first failure")};
 };
 } // namespace
 
@@ -164,6 +172,8 @@ LogicalResult mlir::applyPassManagerCLOptions(PassManager &pm) {
 
   // Add the IR printing instrumentation.
   options->addPrinterInstrumentation(pm);
+
+  pm.enableEagerTermination(options->eagerTermination);
   return success();
 }
 
